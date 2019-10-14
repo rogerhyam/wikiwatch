@@ -6,7 +6,7 @@ require_once('config.php');
 require_once('classes/BgbaseTaxon.php');
 require_once('classes/SpecifyTaxon.php');
 
-$t = new BgbaseTaxon(get_bgbase_connection(), 133701);
+$t = new BgbaseTaxon(get_bgbase_connection(), 28561);
 
 echo "\n";
 echo $t->get_name_num();
@@ -26,7 +26,6 @@ echo $parent->get_signature();
 echo "\n";
 
 echo "\n-----------------------------\n";
-
 
 $s = new SpecifyTaxon(get_specify_connection(), $t);
 $s->save();

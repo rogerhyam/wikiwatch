@@ -10,6 +10,8 @@ class SpecifyTaxon{
 	private $field_map = array();
 	private $rank_definitions = null;
 	
+	
+	
 	private $specify_fields = array(
 	"TaxonID",
 	"TimestampCreated",
@@ -121,7 +123,7 @@ class SpecifyTaxon{
 	*/
 	function load_rank_definitions(){
 		$this->rank_definitions = array();
-		$sql = "SELECT TaxonTreeDefItemID, Name, RankID, ParentItemID, TaxonTreeDefID FROM specify_dev_2.taxontreedefitem where TaxonTreeDefID = 1;";
+		$sql = "SELECT TaxonTreeDefItemID, Name, RankID, ParentItemID, TaxonTreeDefID FROM taxontreedefitem where TaxonTreeDefID = 1;";
 		$result = $this->mysqli->query($sql);
 		
 		while($row = $result->fetch_assoc()){
@@ -131,7 +133,7 @@ class SpecifyTaxon{
 	}
 	
 	// find out if there is an equivalent in specify already
-	function exists_in_specify(){
+	function load(){
 		
 		// shortcut if we have already loaded it
 		if($this->specify_row != null) return true;
@@ -139,6 +141,7 @@ class SpecifyTaxon{
 		// see if we have one with 
 		$sig = $this->bg_taxon->get_signature();
 		$sql = "SELECT * FROM taxon WHERE Text20 = '$sig'";
+		
 		$result = $this->mysqli->query($sql);
 		if($result->num_rows == 0){
 			$this->specify_row = null;
@@ -154,16 +157,18 @@ class SpecifyTaxon{
 		
 		$this->generate_field_map();
 		
-		if($this->exists_in_specify()){
+		if($this->load()){
 			$this->update();
 		}else{
 			$this->create();
 		}
+
 	}
 	
 	
 	function update(){
 		echo "\nUPDATE TAXON\n";
+		print_r($this->mysqli->error);
 	}
 	
 	function create(){
@@ -208,7 +213,18 @@ class SpecifyTaxon{
 		
 		$result = $this->mysqli->query($sql);
 		
-		print_r($this->mysqli->error);
+		if($this->mysqli->error){
+			print_r($this->mysqli->error);
+			echo "\n";
+			echo $sql;
+		}
+		
+		
+		// if we just created it we don't know what its ID is or any other auto gen stuff so reload it
+		$this->specify_row = null;
+		$this->load();
+		
+		// FIXME - NEED TO ADD PARENTAGE NEXT!! HOW DO WE BUILD 
 		
 		// echo $sql;
 		
@@ -221,11 +237,8 @@ class SpecifyTaxon{
 		$this->field_map['CultivarName'] = $this->bg_taxon->get_cultivar();
 		$this->field_map['FullName'] = $this->bg_taxon->get_full_name();
 		// FIXME HighestChildNodeNumber
-		$this->field_map['IsAccepted'] = $this->bg_taxon->is_accepted();
 		$this->field_map['IsHybrid'] = $this->bg_taxon->is_hybrid();
 		$this->field_map['Name'] = $this->bg_taxon->get_name();
-		
-
 		
 		// I believe the node numbers can be set to 0 and will be calculated by the System > Trees > Update Taxon Tree command.
 		$this->field_map['NodeNumber'] = 0;
@@ -233,7 +246,7 @@ class SpecifyTaxon{
 					
 		// Rank stuff 
 		$rank_def = $this->rank_definitions[$this->bg_taxon->get_rank()];
-		print_r($rank_def);
+
 		$this->field_map['RankID'] = $rank_def['RankID'];
 		$this->field_map['TaxonTreeDefItemID'] = $rank_def['TaxonTreeDefItemID'];
 		$this->field_map['TaxonTreeDefID'] = $rank_def['TaxonTreeDefID'];
@@ -242,14 +255,59 @@ class SpecifyTaxon{
 		$this->field_map['ModifiedByAgentID'] = 1;
 		$this->field_map['CreatedByAgentID'] = 1;
 		
-		// FIXME AcceptedID
-		// FIXME ParentID
+		// AcceptedID
+		if($this->bg_taxon->is_accepted()){
+			$this->field_map['IsAccepted'] = true;
+			$this->field_map['AcceptedID'] = null;
+		}else{
+			$this->field_map['IsAccepted'] = false;
+			$bg_accepted = $this->bg_taxon->get_accepted_taxon();
+			$this->accepted_taxon = new SpecifyTaxon($this->mysqli, $bg_accepted);
+			$this->accepted_taxon->save(); // makes sure it exists and/or is up to date
+			$this->field_map['AcceptedID'] = $this->accepted_taxon->specify_row['TaxonID'];
+		}
+		
+		// ParentID - we always set a parent id! it has to be in the tree.
+		$parent = $this->bg_taxon->get_parent_taxon();
+		
+		if(!$parent){
+			// we need to join it to the root of the tree Plantae - see what I did there
+			$this->field_map['ParentID'] = $this->get_taxon_root_id();
+		}else{
+			$this->parent_taxon = new SpecifyTaxon($this->mysqli, $parent);
+			$this->parent_taxon->save(); // makes sure it exists and/or is up to date
+			$this->field_map['ParentID'] = $this->parent_taxon->specify_row['TaxonID'];
+		}
+		
+		// MUST HAVE A VERSION NUMBER OR HYBERNATE CRASHES!
+		if($this->specify_row && $this->specify_row['Version']){
+			$this->field_map['Version'] = $this->specify_row['Version']++;
+		}else{
+			$this->field_map['Version'] = 1;
+		}
+	
+		// N.B. We don't both checking that t
+			
 		// FIXME HybridParent1ID HybridParent2ID
-
 		
-		
+		// FIXME Data source stuff - we should link to sources when they are provided.
 		
 	}
+	
+	function get_taxon_root_id(){
+		
+		$sql = "SELECT TaxonID FROM taxon WHERE name = 'Plantae'";
+		$result = $this->mysqli->query($sql);
+		if($result->num_rows != 1){
+			echo "Everything stops as we can't find the root taxon Plantae TaxonID.";
+			exit;
+		}else{
+			$row = $result->fetch_assoc();
+			return $row['TaxonID'];
+		}
+
+	}
+	
 	
 }
 

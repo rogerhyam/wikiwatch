@@ -33,6 +33,9 @@ class BgbaseAbstractTaxon{
 		return false;
 	}
 	
+	function get_accepted_taxon(){
+		return null;
+	}
 }
 
 // a class that represents a taxon loaded from BGBase
@@ -40,8 +43,9 @@ class BgbaseAbstractTaxon{
 class BgbaseTaxon extends BgbaseAbstractTaxon{
 	
 	private $name_row = null;
-	private $infra_names = array();
+	public $infra_names = array();
 	private $mysqli = null;
+	private $accepted_taxon = null;
 	
 	/**
 	* Load self from bgbase dump based on mysqli connection
@@ -50,7 +54,6 @@ class BgbaseTaxon extends BgbaseAbstractTaxon{
 		
 		parent::__construct($name_num);
 		
-
 		$this->mysqli = $mysqli;
 		
 		// get the main name row for the name
@@ -73,7 +76,7 @@ class BgbaseTaxon extends BgbaseAbstractTaxon{
 		if($this->name_row['CULTIVAR']) return 'Cultivar';
 		
 		// if it doesn't have infraspecific names then it might be a species or above
-		if(count($this->infra_names) == 0 && $this->name_row['SPECIES']) return 'Species';
+		if(count($this->infra_names) == 0) return 'Species';
 		
 		// got to here so it has infraspecific names (and isn't a cultivar)
 		// play a guessing game going from lowest rank up
@@ -141,6 +144,28 @@ class BgbaseTaxon extends BgbaseAbstractTaxon{
 		return false;
 	}
 	
+	function get_accepted_taxon(){
+		
+		// short cut it if we've been asked before
+		if($this->accepted_taxon != null) return $this->accepted_taxon;
+		
+		// there should be an alt_name in the names_mv field 
+		// which points to an Accepted name
+		$sql = "select n.name_num
+			from names as n join names_mv as mv on mv.ALT_NAME = n.name_num
+			where n.ACCEPT = 'A'
+			and mv.name_num = 133701";
+		$result = $this->mysqli->query($sql);
+		if($result->num_rows == 0){
+			return null;
+		}else{
+			$row = $result->fetch_assoc();
+			$this->accepted_taxon = new BgbaseTaxon($this->mysqli, $row['name_num']);
+			return $this->accepted_taxon;
+		}
+		
+	}
+	
 	function is_hybrid(){
 		if($this->name_row['SPEC_HYBR']) return true;
 		return false;
@@ -172,43 +197,61 @@ class BgbaseTaxon extends BgbaseAbstractTaxon{
 	
 	function get_parent_taxon(){
 		
+		echo "\nGET Parent\n";
+		
 		// only create it once
 		if($this->parent_taxon != null) return $this->parent_taxon;
 		
 		// again everything is rank dependent
 		$rank = $this->get_rank();
 		
+		echo "\n$rank\n";
+		
 		// if we are at the level of 'Unknown' then we have topped out
 		if($rank == 'Unknown') return false;
 		
+		// if it is a genus then we join it to a made up family based on its FAMILY field
+		if($rank == 'Genus'){
+			$this->generate_family_parent_taxon();
+			return $this->parent_taxon;
+		}
+		
+		
 		// if it is a species then there is an unknown genus out there for it
 		if($rank == 'Species'){
+			/*
 			$genus_name = $this->name_row['GENUS'];
-			$sql = "SELECT name_num from names where GENUS = '$genus_name' AND SPECIES is NULL AND ACCEPT = 'HT';";
+			$name_num = $this->name_row['NAME_NUM']; // prevent circular references
+			$sql = "SELECT name_num from names where GENUS = '$genus_name' AND SPECIES is NULL AND ACCEPT = 'HT' AND NAME_NUM != $name_num;";
+			echo "\n$sql\n";
 			$result = $this->mysqli->query($sql);
 			if($result->num_rows == 1){
-				$this->generate_genus_parent_taxon();
-			}else{
 				$row = $result->fetch_assoc();
 				$this->parent_taxon = new BgbaseTaxon($this->mysqli, $row['name_num']);
+			}else{
+				$this->generate_genus_parent_taxon();
 			};
-			
+			*/
+			$this->generate_genus_parent_taxon();
+			return $this->parent_taxon;
 		}
 		
 		// everything below species is joined to a species because that is nomenclaturally correct.
 		// only issues are with subvars and subforms and subsubspecies? but there are fewer than 100 of these (51?)
 		$genus_name = $this->name_row['GENUS'];
 		$species_name = $this->name_row['SPECIES'];
+		$auth = $this->name_row['SPEC_AUTH'];
 		
 		$sql = "SELECT name_num
 			from names 
 			where genus = '$genus_name'
 			and species = '$species_name'
 			and cultivar is null
+			and spec_auth = '$auth'
 			and name_num not in  (
 				select distinct(name_num) from names_mv where INFRA_RANK is not null
 			)";
-		
+			
 		$result = $this->mysqli->query($sql);
 		if($result->num_rows == 0){
 			// we haven't found a parent species taxon so we must create one
@@ -248,6 +291,16 @@ class BgbaseTaxon extends BgbaseAbstractTaxon{
 			
 	}
 	
+	function generate_family_parent_taxon(){
+		
+		$this->parent_taxon = new StubTaxon(
+			'Family',
+			ucfirst(strtolower($this->name_row['FAMILY'])),
+			null,
+			null,
+			null);
+	}
+	
 } // end class
 
 // This is used to create a taxon that doesn't exist in BGBase but that is implied.
@@ -272,7 +325,12 @@ class StubTaxon extends BgbaseAbstractTaxon{
 	}
 	
 	function get_parent_taxon(){
-		return $this->parent_taxon;
+		switch ($this->rank) {
+			case 'Family': return null;
+			case 'Genus': return new StubTaxon('Family', $this->family, null, null, $this->author);
+			case 'Species': return new StubTaxon('Family', $this->family, $this->genus, null, $this->author);
+			default: return null;
+		}
 	}
 	
 	
@@ -300,7 +358,7 @@ class StubTaxon extends BgbaseAbstractTaxon{
 	}
 	
 	function get_rank(){
-		return $rank;
+		return $this->rank;
 	}
 }	
 	
